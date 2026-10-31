@@ -19,6 +19,7 @@ import 'package:flutter_hooks/flutter_hooks.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:mobileraker/ui/components/connection/client_type_indicator.dart';
 import 'package:mobileraker/ui/components/octo_widgets.dart';
+import 'package:mobileraker/ui/components/webcam/webcam_ip_stream.dart';
 import 'package:mobileraker/ui/components/webcam/webcam_mjpeg.dart';
 import 'package:mobileraker/ui/components/webcam/webcam_webrtc.dart';
 import 'package:stringr/stringr.dart';
@@ -124,6 +125,15 @@ class Webcam extends HookConsumerWidget {
           webcamInfo: webcamInfo,
           stackContent: modifiedStack,
           imageBuilder: imageBuilder,
+          onHidePressed: onHidePressed,
+        );
+
+      case WebcamServiceType.ipStream:
+        return WebcamIpStream(
+          machine: machine,
+          webcamInfo: webcamInfo,
+          imageBuilder: imageBuilder,
+          stackChild: modifiedStack,
           onHidePressed: onHidePressed,
         );
       default:

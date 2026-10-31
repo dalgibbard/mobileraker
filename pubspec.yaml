@@ -157,6 +157,7 @@ dependencies:
   flutter_svg: ^2.2.4
   flutter_svg_provider: ^1.0.7
   loader_overlay: ^5.0.0
+  video_player: ^2.14.1
   appinio_video_player:
     git:
       url: https://github.com/JahnChoi/appinio_flutter_packages
