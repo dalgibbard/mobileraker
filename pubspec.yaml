@@ -23,6 +23,13 @@ environment:
 
 
 dependency_overrides:
+  rxdart: ^0.28.0
+  riverpod_annotation: ^4.0.3
+  hooks_riverpod: ^3.3.2
+  flutter_hooks: ^0.21.2
+  freezed_annotation: ^3.1.0
+  firebase_core: ^4.5.0
+  intl: any
 #  web: ^0.5.1 # required because network info is using 0.3, but this package is only used by web which we dont build
 #  win32: ^5.9.0 # due to file_picker and share_plus. Do not care as we do  not build for windows!
 
@@ -32,7 +39,7 @@ dependencies:
 
   #packages maintained by mobileraker
   mobileraker_pro:
-    path: ../mobileraker_pro
+    path: ../mobileraker_pro_pub
   #    path: ../mobileraker_pro_public # Uncomment this line if you want to contribute to the project. Alsoo remove the line above
   common:
     path: common
