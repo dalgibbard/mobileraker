@@ -25,6 +25,7 @@ import 'package:progress_indicators/progress_indicators.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import 'package:mobileraker/ui/components/webcam/webcam_mjpeg.dart';
+import 'package:video_player/video_player.dart';
 
 part 'webcam_ip_stream.g.dart';
 
@@ -264,6 +265,10 @@ class _WebcamVideoStreamState extends ConsumerState<WebcamVideoStream> with Widg
     final controller = CachedVideoPlayerPlusController.networkUrl(
       widget.streamUri,
       httpHeaders: widget.httpHeaders,
+      // The live feed is muted: mix mode makes ExoPlayer skip Android audio-focus handling
+      // entirely (VideoPlayer.java: setAudioAttributes(..., !mixMode)), so a background webcam
+      // neither ducks the user's music nor stalls its own prepare waiting for focus.
+      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
       skipCache: true,
     );
     _controller = controller;
