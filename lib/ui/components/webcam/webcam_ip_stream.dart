@@ -22,7 +22,8 @@ import 'package:gap/gap.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:progress_indicators/progress_indicators.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import 'package:video_player/video_player.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 
 import 'package:mobileraker/ui/components/webcam/webcam_mjpeg.dart';
 
@@ -175,8 +176,15 @@ IpStreamKind? _kindFromContentType(String contentType) {
   return null;
 }
 
-/// Plays an HTTP video stream (fragmented/progressive MP4, HLS, ...) in a loop, muted,
-/// with the same connecting/error presentation as the MJPEG webcam widget.
+/// Plays a live HTTP video stream (progressive/fragmented MP4, HLS, ...) through libmpv.
+///
+/// Deliberately NOT the platform player ([video_player] -> ExoPlayer on Android): Moonraker
+/// `ipstream` entries frequently point at relayed live progressive MP4 (mp4mux/ffmpeg relays
+/// serving `moov`-first, unbounded, duration-0 files over HTTP/1.0 with no `Range` support).
+/// ExoPlayer treats that shape as a seekable file: it probes, mis-reads the (zero/rolling)
+/// duration, then stalls seeking on a server that cannot honor byte ranges - the player
+/// "initializes" but never renders frames. mpv is built for exactly this shape, matching the
+/// browser `<video>` element Fluidd/Mainsail use for the same URL.
 class WebcamVideoStream extends ConsumerStatefulWidget {
   const WebcamVideoStream({
     super.key,
@@ -200,10 +208,18 @@ class WebcamVideoStream extends ConsumerStatefulWidget {
 }
 
 class _WebcamVideoStreamState extends ConsumerState<WebcamVideoStream> with WidgetsBindingObserver {
-  VideoPlayerController? _controller;
+  static const _openTimeout = Duration(seconds: 15);
+  static const _retryDelay = Duration(seconds: 10);
+
+  Player? _player;
+  VideoController? _controller;
+  StreamSubscription<String>? _errorSub;
+  StreamSubscription<VideoParams>? _openedSub;
+  StreamSubscription<bool>? _completedSub;
+  Timer? _openTimer;
+  Timer? _retryTimer;
   Object? _initError;
   bool _connecting = true;
-  Timer? _retryTimer;
 
   @override
   void initState() {
@@ -212,56 +228,80 @@ class _WebcamVideoStreamState extends ConsumerState<WebcamVideoStream> with Widg
     _initPlayer();
   }
 
+  void _disposePlayer() {
+    _openTimer?.cancel();
+    _errorSub?.cancel();
+    _openedSub?.cancel();
+    _completedSub?.cancel();
+    _player?.dispose();
+    _player = null;
+    _controller = null;
+  }
+
+  void _fail(Object error) {
+    if (!mounted) return;
+    talker.warning('Could not play IpStream video stream ${widget.streamUri.path}', error);
+    setState(() {
+      _connecting = false;
+      _initError = error;
+    });
+    _retryTimer = Timer(_retryDelay, _initPlayer);
+  }
+
   void _initPlayer() {
     _retryTimer?.cancel();
-    _controller?.dispose();
+    _disposePlayer();
     setState(() {
       _connecting = true;
       _initError = null;
     });
 
-    final controller = VideoPlayerController.networkUrl(
-      widget.streamUri,
-      httpHeaders: widget.httpHeaders,
-      videoPlayerOptions: VideoPlayerOptions(mixWithOthers: true),
+    MediaKit.ensureInitialized();
+    final player = Player(
+      configuration: const PlayerConfiguration(
+        muted: true,
+        title: 'Mobileraker webcam',
+      ),
     );
+    _player = player;
+    _controller = VideoController(player);
 
-    controller.initialize().then((_) {
-      if (!mounted) {
-        controller.dispose();
-        return;
-      }
-      controller.setLooping(true);
-      controller.setVolume(0);
-      controller.play();
-      setState(() {
-        _controller = controller;
-        _connecting = false;
-      });
-    }).catchError((Object err) {
-      controller.dispose();
-      if (!mounted) return;
-      talker.warning('Could not init IpStream video player', err);
-      setState(() {
-        _connecting = false;
-        _initError = err;
-      });
-      _retryTimer = Timer(const Duration(seconds: 10), _initPlayer);
+    _errorSub = player.stream.error.listen((message) {
+      if (message.isNotEmpty) _fail(message);
     });
+    _openedSub = player.stream.videoParams.listen((params) {
+      if (params != null && mounted) setState(() => _connecting = false);
+    });
+    // The relay dying mid-feed shows up as EOF: treat it like a dropped MJPEG stream and
+    // reconnect so the card recovers without a page reload.
+    _completedSub = player.stream.completed.listen((completed) {
+      if (!completed || !mounted) return;
+      _connecting = true;
+      setState(() {});
+      _retryTimer = Timer(const Duration(seconds: 3), _initPlayer);
+    });
+    _openTimer = Timer(_openTimeout, () {
+      if (_connecting && mounted) _fail('No stream data within ${_openTimeout.inSeconds}s');
+    });
+
+    player.open(
+      Media(widget.streamUri.toString(), httpHeaders: widget.httpHeaders),
+      play: true,
+    );
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    var controller = _controller;
-    if (controller == null || !controller.value.isInitialized) return;
+    var player = _player;
+    if (player == null) return;
     switch (state) {
       case AppLifecycleState.resumed:
-        controller.play();
+        player.play();
         break;
       case AppLifecycleState.inactive:
       case AppLifecycleState.paused:
       case AppLifecycleState.hidden:
-        controller.pause();
+        player.pause();
         break;
       default:
         break;
@@ -272,7 +312,7 @@ class _WebcamVideoStreamState extends ConsumerState<WebcamVideoStream> with Widg
   void dispose() {
     _retryTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
-    _controller?.dispose();
+    _disposePlayer();
     super.dispose();
   }
 
@@ -287,11 +327,14 @@ class _WebcamVideoStreamState extends ConsumerState<WebcamVideoStream> with Widg
         onHidePressed: widget.onHidePressed,
       );
     }
-    if (controller == null || !controller.value.isInitialized) {
+    if (controller == null || _connecting) {
       return _ConnectingWidget();
     }
 
-    Widget video = VideoPlayer(controller);
+    Widget video = Video(
+      controller: controller,
+      controls: NoVideoControls,
+    );
     if (widget.transformation != null) {
       video = Transform(
         alignment: Alignment.center,
