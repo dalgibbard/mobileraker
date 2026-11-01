@@ -4,6 +4,7 @@
  */
 
 import 'dart:async';
+import 'dart:io';
 
 import 'package:common/data/model/hive/machine.dart';
 import 'package:common/data/model/moonraker_db/webcam_info.dart';
@@ -61,7 +62,7 @@ class WebcamIpStream extends ConsumerWidget {
     var clientType = ref.watch(jrpcClientTypeProvider(machine.uuid));
     var streamUri = resolveIpStreamUri(machine, clientType, webcamInfo.streamUrl);
 
-    var kind = ref.watch(ipStreamKindProvider(dio, streamUri));
+    var kind = ref.watch(ipStreamKindResolverProvider(dio, streamUri));
 
     return kind.when(
       loading: () => _ConnectingWidget(),
@@ -110,7 +111,7 @@ Uri resolveIpStreamUri(Machine machine, ClientType clientType, Uri camUri) {
 }
 
 @riverpod
-class IpStreamKind extends _$IpStreamKind {
+class IpStreamKindResolver extends _$IpStreamKindResolver {
   @override
   FutureOr<IpStreamKind> build(Dio dio, Uri uri) async {
     // A definitive file extension needs no network probe (and probing a live video stream

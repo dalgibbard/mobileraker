@@ -336,10 +336,19 @@ class Warmup extends _$Warmup {
     });
 
     yield StartUpStep.firebaseAppCheck;
-    await FirebaseAppCheck.instance.activate();
+    try {
+      // LOCAL-ONLY: placeholder Firebase project -> AppCheck attestation never resolves
+      await FirebaseAppCheck.instance.activate().timeout(const Duration(seconds: 8));
+    } catch (e) {
+      talker.warning('LOCAL BUILD: AppCheck skipped', e);
+    }
 
     yield StartUpStep.firebaseRemoteConfig;
-    await ref.read(remoteConfigInstanceProvider).initialize();
+    try {
+      await ref.read(remoteConfigInstanceProvider).initialize().timeout(const Duration(seconds: 8));
+    } catch (e) {
+      talker.warning('LOCAL BUILD: remote config init skipped', e);
+    }
     if (kDebugMode) {
       FirebaseCrashlytics.instance.setCrashlyticsCollectionEnabled(false);
     }
@@ -385,7 +394,12 @@ class Warmup extends _$Warmup {
     await EasyLocalization.ensureInitialized();
 
     yield StartUpStep.paymentService;
-    await ref.read(paymentServiceProvider).initialize();
+    try {
+      // LOCAL-ONLY: RevenueCat has no record for this debug applicationId
+      await ref.read(paymentServiceProvider).initialize().timeout(const Duration(seconds: 10));
+    } catch (e) {
+      talker.warning('LOCAL BUILD: payment service init skipped', e);
+    }
 
     // await for the initial rout provider to be ready and setup!
     yield StartUpStep.goRouter;
@@ -396,7 +410,14 @@ class Warmup extends _$Warmup {
     await initializeAvailableMachines(ref);
 
     yield StartUpStep.notificationService;
-    await ref.read(notificationServiceProvider).initialize([AWESOME_FCM_LICENSE_ANDROID, AWESOME_FCM_LICENSE_IOS]);
+    try {
+      await ref
+          .read(notificationServiceProvider)
+          .initialize([AWESOME_FCM_LICENSE_ANDROID, AWESOME_FCM_LICENSE_IOS])
+          .timeout(const Duration(seconds: 10));
+    } catch (e) {
+      talker.warning('LOCAL BUILD: notification service init skipped', e);
+    }
 
     yield StartUpStep.initMachineSync;
     ref.read(deviceFcmSettingsSyncServiceProvider).initialize();

@@ -176,8 +176,8 @@ class PrinterEditPage extends HookConsumerWidget {
             break;
           case MachineAction.reset_token:
             final dRes = await dialogService.showDangerConfirm(
-              title: tr('pages.printer_edit.confirm_fcm_reset.title', args: [machineName]),
-              body: tr('pages.printer_edit.confirm_fcm_reset.body', args: [machineName, machineAdd]),
+              title: tr('pages.printer_edit.confirm_fcm_reset.title', args: [machineName!]),
+              body: tr('pages.printer_edit.confirm_fcm_reset.body', args: [machineName!, machineAdd!]),
               actionLabel: tr('general.clear'),
             );
             if (dRes?.confirmed != true) return;
@@ -187,8 +187,8 @@ class PrinterEditPage extends HookConsumerWidget {
             break;
           case MachineAction.delete:
             final dRes = await dialogService.showDangerConfirm(
-              title: tr('pages.printer_edit.confirm_deletion.title', args: [machineName]),
-              body: tr('pages.printer_edit.confirm_deletion.body', args: [machineName, machineAdd]),
+              title: tr('pages.printer_edit.confirm_deletion.title', args: [machineName!]),
+              body: tr('pages.printer_edit.confirm_deletion.body', args: [machineName!, machineAdd!]),
               actionLabel: tr('general.delete'),
             );
 
