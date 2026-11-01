@@ -284,7 +284,38 @@ class _WebcamVideoStreamState extends ConsumerState<WebcamVideoStream> with Widg
       if (_connecting && mounted) _fail('No stream data within ${_openTimeout.inSeconds}s');
     });
 
-    player.open(
+    unawaited(_openStream(player));
+  }
+
+  /// Opens [player]'s media after applying mpv options the live `ipstream` shape needs.
+  ///
+  /// These relays answer with HTTP/1.0, no `Content-Length` and no `Range` support, so mpv marks
+  /// the connection unseekable and the MP4 demuxer's probe-seek aborts parsing with
+  /// "You can force it with '--force-seekable=yes'". Allowing forced seekability makes mpv emulate
+  /// seeks by re-opening and reading forward - for a live tail that means just resuming the feed.
+  /// Setting the option before [Player.open] matters: it must apply to the upcoming demux.
+  Future<void> _openStream(Player player) async {
+    final platform = player.platform;
+    if (platform is NativePlayer) {
+      try {
+        await platform.setProperty('force-seekable', 'yes');
+      } on Exception catch (setPropertyError) {
+        try {
+          await platform.command(['o', 'force-seekable', 'yes']);
+        } on Exception catch (commandError) {
+          talker.warning(
+            'Could not set mpv force-seekable for IpStream webcam',
+            '$setPropertyError / $commandError',
+          );
+        }
+      }
+    }
+
+    if (!mounted || !identical(_player, player)) {
+      // Widget was disposed or the player re-created while mpv was initializing.
+      return;
+    }
+    await player.open(
       Media(widget.streamUri.toString(), httpHeaders: widget.httpHeaders),
       play: true,
     );
