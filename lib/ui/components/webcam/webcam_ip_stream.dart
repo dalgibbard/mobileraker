@@ -25,7 +25,6 @@ import 'package:progress_indicators/progress_indicators.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import 'package:mobileraker/ui/components/webcam/webcam_mjpeg.dart';
-import 'package:video_player/video_player.dart';
 
 part 'webcam_ip_stream.g.dart';
 
