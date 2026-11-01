@@ -26,6 +26,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import 'package:mobileraker/ui/components/webcam/webcam_mjpeg.dart';
+import 'package:mobileraker/ui/components/webcam/webcam_ipstream_debug.dart';
 
 part 'webcam_ip_stream.g.dart';
 
@@ -81,12 +82,10 @@ class WebcamIpStream extends ConsumerWidget {
           stackChild: stackChild,
           onHidePressed: onHidePressed,
         ),
-        IpStreamKind.video => WebcamVideoStream(
+        IpStreamKind.video => WebcamIpStreamDebug(
           key: ValueKey('${webcamInfo.uid ?? webcamInfo.name}#${machine.uuid}'),
           streamUri: streamUri,
           httpHeaders: dio.options.headers.cast<String, String>(),
-          rotation: webcamInfo.rotation,
-          transformation: webcamInfo.transformMatrix,
           stackChild: stackChild,
           onHidePressed: onHidePressed,
         ),
