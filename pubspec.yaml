@@ -174,9 +174,7 @@ dependencies:
   geekyants_flutter_gauges: ^1.0.3
   pretty_qr_code: ^3.3.0
   dotted_border: ^3.0.1
-  media_kit: ^1.2.6
-  media_kit_video: ^2.0.1
-  media_kit_libs_video: ^1.0.7
+  cached_video_player_plus: ^3.0.3
 
 dev_dependencies:
   flutter_test:

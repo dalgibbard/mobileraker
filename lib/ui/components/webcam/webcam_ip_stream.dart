@@ -6,6 +6,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:cached_video_player_plus/cached_video_player_plus.dart';
 import 'package:common/data/model/hive/machine.dart';
 import 'package:common/data/model/moonraker_db/webcam_info.dart';
 import 'package:common/network/dio_provider.dart';
@@ -22,11 +23,8 @@ import 'package:gap/gap.dart';
 import 'package:hooks_riverpod/hooks_riverpod.dart';
 import 'package:progress_indicators/progress_indicators.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
 
 import 'package:mobileraker/ui/components/webcam/webcam_mjpeg.dart';
-import 'package:mobileraker/ui/components/webcam/webcam_ipstream_debug.dart';
 
 part 'webcam_ip_stream.g.dart';
 
@@ -39,8 +37,8 @@ enum IpStreamKind { mjpeg, video }
 /// actually serves is up to the camera/software behind it (mjpeg-streamer style MJPEG for many
 /// IP cams, or an MP4/HLS stream e.g. from go2rtc or camera-streamer). The response Content-Type
 /// is probed once to route each case to the matching renderer: MJPEG goes to the existing
-/// [WebcamMjpeg] pipeline, video containers are played with the platform video player
-/// (ExoPlayer/AVPlayer), mirroring how the Fluidd web UI renders `ipstream` via a native
+/// [WebcamMjpeg] pipeline, video containers are played progressively by [WebcamVideoStream],
+/// mirroring how the Fluidd web UI renders `ipstream` via a native
 /// `<video autoplay muted playsinline>` element.
 class WebcamIpStream extends ConsumerWidget {
   const WebcamIpStream({
@@ -82,10 +80,12 @@ class WebcamIpStream extends ConsumerWidget {
           stackChild: stackChild,
           onHidePressed: onHidePressed,
         ),
-        IpStreamKind.video => WebcamIpStreamDebug(
+        IpStreamKind.video => WebcamVideoStream(
           key: ValueKey('${webcamInfo.uid ?? webcamInfo.name}#${machine.uuid}'),
           streamUri: streamUri,
           httpHeaders: dio.options.headers.cast<String, String>(),
+          rotation: webcamInfo.rotation,
+          transformation: webcamInfo.transformMatrix,
           stackChild: stackChild,
           onHidePressed: onHidePressed,
         ),
@@ -156,8 +156,9 @@ IpStreamKind? _kindFromUri(Uri uri) {
   final query = uri.query.toLowerCase();
   // mjpeg-streamer style endpoints (/webcam/?action=stream, ustreamer, motion)
   if (query.contains('action=stream')) return IpStreamKind.mjpeg;
-  if (path.endsWith('.m3u8') || path.endsWith('.mp4') || path.endsWith('.mpd') || path.endsWith('.mkv') || path.endsWith('.webm'))
+  if (path.endsWith('.m3u8') || path.endsWith('.mp4') || path.endsWith('.mpd') || path.endsWith('.mkv') || path.endsWith('.webm')) {
     return IpStreamKind.video;
+  }
   if (path.endsWith('.mjpg') || path.endsWith('.mjpeg')) return IpStreamKind.mjpeg;
   return null;
 }
@@ -165,25 +166,29 @@ IpStreamKind? _kindFromUri(Uri uri) {
 IpStreamKind? _kindFromContentType(String contentType) {
   if (contentType.contains('multipart/x-mixed-replace') ||
       contentType.contains('image/jpeg') ||
-      contentType.contains('image/jpg'))
+      contentType.contains('image/jpg')) {
     return IpStreamKind.mjpeg;
+  }
   if (contentType.startsWith('video/') ||
       contentType.contains('application/mp4') ||
       contentType.contains('mpegurl') ||
-      contentType.contains('m3u8'))
+      contentType.contains('m3u8')) {
     return IpStreamKind.video;
+  }
   return null;
 }
 
-/// Plays a live HTTP video stream (progressive/fragmented MP4, HLS, ...) through libmpv.
+/// Plays a live HTTP video stream (progressive/fragmented MP4, HLS, ...) progressively off
+/// the network.
 ///
-/// Deliberately NOT the platform player ([video_player] -> ExoPlayer on Android): Moonraker
-/// `ipstream` entries frequently point at relayed live progressive MP4 (mp4mux/ffmpeg relays
-/// serving `moov`-first, unbounded, duration-0 files over HTTP/1.0 with no `Range` support).
-/// ExoPlayer treats that shape as a seekable file: it probes, mis-reads the (zero/rolling)
-/// duration, then stalls seeking on a server that cannot honor byte ranges - the player
-/// "initializes" but never renders frames. mpv is built for exactly this shape, matching the
-/// browser `<video>` element Fluidd/Mainsail use for the same URL.
+/// Moonraker `ipstream` entries frequently point at relayed live progressive MP4 (mp4mux/ffmpeg
+/// relays serving `moov`-first, unbounded files over HTTP/1.0 with no `Range` support). Plain
+/// `video_player` (ExoPlayer) treats that shape as a seekable file: it probes, mis-reads the
+/// (zero/rolling) duration, then stalls seeking on a server that cannot honor byte ranges - the
+/// player "initializes" but never renders frames. `cached_video_player_plus` (already a
+/// dependency of the app via `appinio_video_player`) feeds its player progressively from the
+/// network instead, which plays these relays smoothly - the same shape a browser `<video>`
+/// element renders in Fluidd/Mainsail. `skipCache` keeps the endless live feed off disk.
 class WebcamVideoStream extends ConsumerStatefulWidget {
   const WebcamVideoStream({
     super.key,
@@ -207,18 +212,16 @@ class WebcamVideoStream extends ConsumerStatefulWidget {
 }
 
 class _WebcamVideoStreamState extends ConsumerState<WebcamVideoStream> with WidgetsBindingObserver {
-  static const _openTimeout = Duration(seconds: 15);
+  static const _openTimeout = Duration(seconds: 20);
   static const _retryDelay = Duration(seconds: 10);
 
-  Player? _player;
-  VideoController? _controller;
-  StreamSubscription<String>? _errorSub;
-  StreamSubscription<VideoParams>? _openedSub;
-  StreamSubscription<bool>? _completedSub;
+  CachedVideoPlayerPlusController? _controller;
+  VoidCallback? _controllerListener;
   Timer? _openTimer;
   Timer? _retryTimer;
   Object? _initError;
   bool _connecting = true;
+  bool _failed = false;
 
   @override
   void initState() {
@@ -229,16 +232,18 @@ class _WebcamVideoStreamState extends ConsumerState<WebcamVideoStream> with Widg
 
   void _disposePlayer() {
     _openTimer?.cancel();
-    _errorSub?.cancel();
-    _openedSub?.cancel();
-    _completedSub?.cancel();
-    _player?.dispose();
-    _player = null;
+    var controller = _controller;
     _controller = null;
+    if (controller != null) {
+      if (_controllerListener != null) controller.removeListener(_controllerListener!);
+      unawaited(controller.dispose());
+    }
+    _controllerListener = null;
   }
 
   void _fail(Object error) {
-    if (!mounted) return;
+    if (!mounted || _failed) return;
+    _failed = true;
     talker.warning('Could not play IpStream video stream ${widget.streamUri.path}', error);
     setState(() {
       _connecting = false;
@@ -254,84 +259,65 @@ class _WebcamVideoStreamState extends ConsumerState<WebcamVideoStream> with Widg
       _connecting = true;
       _initError = null;
     });
+    _failed = false;
 
-    MediaKit.ensureInitialized();
-    final player = Player(
-      configuration: const PlayerConfiguration(
-        muted: true,
-        title: 'Mobileraker webcam',
-      ),
+    final controller = CachedVideoPlayerPlusController.networkUrl(
+      widget.streamUri,
+      httpHeaders: widget.httpHeaders,
+      skipCache: true,
     );
-    _player = player;
-    _controller = VideoController(player);
+    _controller = controller;
+    _controllerListener = () => _onControllerUpdate(controller);
+    controller.addListener(_controllerListener!);
 
-    _errorSub = player.stream.error.listen((message) {
-      if (message.isNotEmpty) _fail(message);
-    });
-    _openedSub = player.stream.videoParams.listen((params) {
-      if (params != null && mounted) setState(() => _connecting = false);
-    });
-    // The relay dying mid-feed shows up as EOF: treat it like a dropped MJPEG stream and
-    // reconnect so the card recovers without a page reload.
-    _completedSub = player.stream.completed.listen((completed) {
-      if (!completed || !mounted) return;
-      _connecting = true;
-      setState(() {});
-      _retryTimer = Timer(const Duration(seconds: 3), _initPlayer);
-    });
     _openTimer = Timer(_openTimeout, () {
       if (_connecting && mounted) _fail('No stream data within ${_openTimeout.inSeconds}s');
     });
 
-    unawaited(_openStream(player));
+    unawaited(
+      controller.initialize().timeout(_openTimeout).then((_) {
+        if (!mounted || !identical(_controller, controller)) return;
+        _openTimer?.cancel();
+        controller.setVolume(0);
+        controller.play();
+        setState(() => _connecting = false);
+      }).catchError((Object error) {
+        _fail(error);
+      }),
+    );
   }
 
-  /// Opens [player]'s media after applying mpv options the live `ipstream` shape needs.
-  ///
-  /// These relays answer with HTTP/1.0, no `Content-Length` and no `Range` support, so mpv marks
-  /// the connection unseekable and the MP4 demuxer's probe-seek aborts parsing with
-  /// "You can force it with '--force-seekable=yes'". Allowing forced seekability makes mpv emulate
-  /// seeks by re-opening and reading forward - for a live tail that means just resuming the feed.
-  /// Setting the option before [Player.open] matters: it must apply to the upcoming demux.
-  Future<void> _openStream(Player player) async {
-    final platform = player.platform;
-    if (platform is NativePlayer) {
-      try {
-        await platform.setProperty('force-seekable', 'yes');
-      } on Exception catch (setPropertyError) {
-        try {
-          await platform.command(['o', 'force-seekable', 'yes']);
-        } on Exception catch (commandError) {
-          talker.warning(
-            'Could not set mpv force-seekable for IpStream webcam',
-            '$setPropertyError / $commandError',
-          );
-        }
-      }
-    }
-
-    if (!mounted || !identical(_player, player)) {
-      // Widget was disposed or the player re-created while mpv was initializing.
+  void _onControllerUpdate(CachedVideoPlayerPlusController controller) {
+    if (!mounted || !identical(_controller, controller)) return;
+    var value = controller.value;
+    if (value.hasError) {
+      // A dropped relay mid-feed surfaces as a player error; treat it like a dropped MJPEG
+      // stream and rebuild the player so the card recovers without a page reload.
+      _fail(value.errorDescription ?? 'Unknown playback error');
       return;
     }
-    await player.open(
-      Media(widget.streamUri.toString(), httpHeaders: widget.httpHeaders),
-      play: true,
-    );
+    if (value.isCompleted) {
+      // EOF on a live relay means the feed died: reconnect.
+      _connecting = true;
+      setState(() {});
+      _retryTimer = Timer(const Duration(seconds: 3), _initPlayer);
+      return;
+    }
+    setState(() {});
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    var player = _player;
-    if (player == null) return;
+    var controller = _controller;
+    if (controller == null) return;
     switch (state) {
       case AppLifecycleState.resumed:
-        player.play();
+        controller.play();
         break;
       case AppLifecycleState.inactive:
       case AppLifecycleState.paused:
       case AppLifecycleState.hidden:
-        player.pause();
+        controller.pause();
         break;
       default:
         break;
@@ -361,10 +347,7 @@ class _WebcamVideoStreamState extends ConsumerState<WebcamVideoStream> with Widg
       return _ConnectingWidget();
     }
 
-    Widget video = Video(
-      controller: controller,
-      controls: NoVideoControls,
-    );
+    Widget video = CachedVideoPlayerPlus(controller);
     if (widget.transformation != null) {
       video = Transform(
         alignment: Alignment.center,
@@ -408,7 +391,6 @@ class _ConnectingWidget extends StatelessWidget {
 
 class _ErrorWidget extends StatelessWidget {
   const _ErrorWidget({
-    super.key,
     required this.streamUri,
     this.error,
     this.onRetryPressed,
