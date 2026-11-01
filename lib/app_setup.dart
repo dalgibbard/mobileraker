@@ -317,7 +317,11 @@ class Warmup extends _$Warmup {
 
     // Firebase stuff
     yield StartUpStep.firebaseCore;
-    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+    try {
+      await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform).timeout(const Duration(seconds: 8));
+    } catch (e) {
+      talker.warning('LOCAL BUILD: Firebase re-init skipped', e);
+    }
 
     // only start listening after Firebase is initialized
     listenSelf((previous, next) {

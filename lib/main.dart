@@ -3,6 +3,7 @@
  * All rights reserved.
  */
 
+import 'dart:async';
 import 'dart:io';
 
 import 'package:common/exceptions/mobileraker_exception.dart';
@@ -45,7 +46,13 @@ import 'ui/theme/theme_setup.dart';
 
 Future<void> main() async {
   var widgetsBinding = WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
+  try {
+    // LOCAL-ONLY: placeholder Firebase config must not block startup
+    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform)
+        .timeout(const Duration(seconds: 8));
+  } catch (e) {
+    debugPrint('LOCAL BUILD: Firebase initializeApp failed/timeout: $e');
+  }
 
   await setupLogger();
   EasyLocalization.logger.enableLevels = [LevelMessages.error];
@@ -296,17 +303,30 @@ class _WarmUpError extends StatelessWidget {
   }
 }
 
-class _LoadingSplashScreen extends HookWidget {
+class _LoadingSplashScreen extends HookConsumerWidget {
   const _LoadingSplashScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     var animCtrler = useAnimationController(
       duration: const Duration(seconds: 1),
       lowerBound: 0.5,
       upperBound: 1,
       initialValue: 1,
     )..repeat(reverse: true);
+
+    var elapsed = useState(0);
+    useEffect(() {
+      var t = Timer.periodic(const Duration(seconds: 1), (timer) => elapsed.value = timer.tick);
+      return t.cancel;
+    }, const []);
+
+    var step = ref.watch(warmupProvider).value;
+
+    // LOCAL-ONLY debug aid: report warmup progress on the splash
+    var status = step == null
+        ? 'warmup pre-start... ${elapsed.value}s'
+        : 'warmup: ${step.name} ${step.emoji} ${elapsed.value}s';
 
     return SafeArea(
       child: Directionality(
@@ -321,12 +341,12 @@ class _LoadingSplashScreen extends HookWidget {
                 child: SvgPicture.asset('assets/vector/mr_logo.svg', height: 120),
               ),
             ),
-            const Flexible(
+            Flexible(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  _EmojiIndicator(),
-                  Text('Created by Patrick Schmidt', style: TextStyle(color: Color(0xff777777))),
+                  Text(status, style: const TextStyle(color: Color(0xff999999), fontSize: 14)),
+                  const Text('Created by Patrick Schmidt', style: TextStyle(color: Color(0xff777777))),
                 ],
               ),
             ),
@@ -334,17 +354,6 @@ class _LoadingSplashScreen extends HookWidget {
         ),
       ),
     );
-  }
-}
-
-class _EmojiIndicator extends ConsumerWidget {
-  const _EmojiIndicator({super.key});
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    var step = ref.watch(warmupProvider).value;
-    if (step == null) return const SizedBox.shrink();
-    return Text(step.emoji);
   }
 }
 
