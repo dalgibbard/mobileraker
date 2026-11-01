@@ -61,6 +61,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-ipstream-test"
+        }
         release {
             signingConfig = signingConfigs.release
         }
